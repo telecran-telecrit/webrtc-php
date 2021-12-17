@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8" />
+	<title>webrtc</title>
+</head>
+<body>
+	<script>
+		let connection = null;
+		let localStream = null;
+		let channel = null;
+		let ws = null;
+		let answer = 0;
+		
+		// Not necessary with websockets, but here I need it to distinguish calls
+		const unique = Math.floor(100000 + Math.random() * 900000);
+      
+            try {
+                ws = new EventSource('serverGet.php?unique='+unique);
+            } catch(e) {
+                console.error("Could not create eventSource ",e);
+            }
+            
+            // EventSource does not have a 'send()'
+            // so I use an ajax-xmlHttpRequest for posting data.
+            // Now the eventsource-functions are equal to websocket.
+			ws.send = function send(message) {
+				 var xhttp = new XMLHttpRequest();
+				 xhttp.onreadystatechange = function() {
+					 if (this.readyState!=4) {
+					   return;
+					 }
+					 if (this.status != 200) {
+					   console.log("Error sending to server with message: " +message);
+					 }
+				 };
+				 xhttp.open('POST', 'serverPost.php?unique='+unique, true);
+				 xhttp.setRequestHeader("Content-Type","Application/X-Www-Form-Urlencoded");
+				 xhttp.send(message);
+			};
+			
+			// onmessage is extended for receiving 
+            // multiple events at once for speed, because the polling 
+            // frequency of EventSource is low.
+			ws.onmessage = function(e) {
+				if (e.data.includes("_MULTIPLEVENTS_")) {
+					multiple = e.data.split("_MULTIPLEVENTS_");
+					for (x=0; x<multiple.length; x++) {
+						onsinglemessage(multiple[x]);
+					}
+				} else {
+					onsinglemessage(e.data);
+				}
+			};
+			
+			
+			
+    function onsinglemessage(data) {
+        var package = JSON.parse(data);
+        var data = package.data;
+        
+        console.log("received single message: " + package.event);
+        switch (package.event) {
+            case 'client-call':
+                icecandidate(localStream);
+                connection.createOffer({
+                    offerToReceiveAudio: 0,
+                    offerToReceiveVideo: 0
+                }).then(function (desc) {
+					
+					
+					
+                    connection.setLocalDescription(desc).then(
+                        function () {
+                            publish('client-offer', connection.localDescription);
+                        }
+                    ).catch(function (e) {
+                        console.log("Problem with publishing client offer"+e);
+                    });
+                }).catch(function (e) {
+                    console.log("Problem while doing client-call: "+e);
+                });
+                break;
+            case 'client-answer':
+                if (connection==null) {
+                    console.error('Before processing the client-answer, I need a client-offer');
+                    break;
+                }
+                connection.setRemoteDescription(new RTCSessionDescription(data),function(){
+					console.log("connected: ok");}, 
+                    function(e) { console.error("Problem while doing client-answer: ",e);
+                });
+                break;
+            case 'client-offer':
+                icecandidate(localStream);
+                connection.setRemoteDescription(new RTCSessionDescription(data), function(){
+                    if (!answer) {
+                        connection.createAnswer(function (desc) {
+                                connection.setLocalDescription(desc, function () {
+                                    publish('client-answer', connection.localDescription);
+                                }, function(e){
+                                    console.log("Problem getting client answer: ",e);
+                                });
+                            }
+                        ,function(e){
+                            console.log("Problem while doing client-offer: ",e);
+                        });
+                        answer = 1;
+                    }
+                }, function(e){
+                    console.log("Problem while doing client-offer2: ",e);
+                });
+                break;
+            case 'client-candidate':
+               if (connection==null) {
+                    console.error('Before processing the client-answer, I need a client-offer');
+                    break;
+                }
+                connection.addIceCandidate(new RTCIceCandidate(data), function(){}, 
+                    function(e) { console.log("Problem adding ice candidate: "+e);});
+                break;
+        }
+    };
+			
+
+    function icecandidate(localStream) {
+        connection = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      connection.onconnectionstatechange = (event) => (document.getElementById('connectionState').innerText = connection.connectionState) // console.log('onconnectionstatechange', connection.connectionState)
+      connection.oniceconnectionstatechange = (event) =>
+        (document.getElementById('iceConnectionState').innerText = connection.iceConnectionState) // console.log('oniceconnectionstatechange', connection.iceConnectionState)
+
+
+        connection.onicecandidate = function (event) {
+            if (event.candidate) {
+                publish('client-candidate', event.candidate);
+            }
+        };
+        
+        
+      connection.ondatachannel = (event) => {
+        console.log('ondatachannel')
+        channel = event.channel
+        // channel.onopen = event => console.log('onopen', event);
+        // channel.onmessage = event => console.log('onmessage', event);
+        channel.onmessage = (event) => alert(event.data)
+      };
+        
+///        try {
+///            connection.addStream(localStream);
+///        } catch(e){
+//            var tracks = localStream.getTracks();
+//            for(var i=0;i<tracks.length;i++){
+//                connection.addTrack(tracks[i], localStream);
+//            }
+///        }
+        connection.ontrack = function (e) {
+//            document.getElementById('remoteVideo').style.display="block";
+//            document.getElementById('localVideo').style.display="none";
+//            remoteVideo.srcObject = e.streams[0];
+			console.log('ontrack runned');
+        };
+        
+        channel = connection.createDataChannel('data');
+        channel.onmessage = (event) => alert(event.data);
+    };
+
+
+     
+
+
+      async function send_text() {
+        const text = document.getElementById('text').value
+
+        channel.send(text)
+      }
+      
+      
+      //////////////////////////
+      
+    function publish(event, data) {
+        console.log("sending ws.send: " + event);
+        ws.send(JSON.stringify({
+            event:event,
+            data:data
+        }));
+    }
+    
+    setTimeout(function() {
+		publish('client-call', null);
+	}, 3000);  
+      
+    </script>
+
+    <hr />
+    <input id="text" type="text" />
+    <input type="button" value="send" onclick="send_text()" />
+    <hr />
+    <table border="1">
+      <tr>
+        <th colspan="2">connection</th>
+      </tr>
+      <tr>
+        <th>connectionState</th>
+        <td id="connectionState">unknown</td>
+      </tr>
+      <tr>
+        <th>iceConnectionState</th>
+        <td id="iceConnectionState">unknown</td>
+      </tr>
+    </table>
+  </body>
+</html>
